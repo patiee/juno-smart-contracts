@@ -1,0 +1,82 @@
+schema {
+	query: Query
+}
+	
+type MsgMigrateContract {
+	contract:  String
+	codeId:  Int
+	msg:  String
+	id:  ID!
+	sender:  String
+}
+
+type MsgUpdateAdmin {
+	id:  ID!
+	sender:  String
+	newAdmin:  String
+	contract:  String
+}
+
+type MsgClearAdmin {
+	sender:  String
+	contract:  String
+	id:  ID!
+}
+
+type MsgInstantiateContract452 {
+	name: String
+	symbol: String
+	minter: String
+	id: ID!
+}
+
+type Query {
+	msgInstantiateContract(id: String, height: Int):  [MsgInstantiateContract]
+	msgExecuteContract(id: String, height: Int):  [MsgExecuteContract]
+	msgMigrateContract(id: String, height: Int):  [MsgMigrateContract]
+	msgUpdateAdmin(id: String, height: Int):  [MsgUpdateAdmin]
+	msgClearAdmin(id: String, height: Int):  [MsgClearAdmin]
+	msgInstantiateContract452(id: String, height: Int): [MsgInstantiateContract452]
+	messages(id: String, height: Int):  [Message]
+}
+
+type Message {
+	msg:  String
+	id:  ID!
+	index:  Int
+	height:  Int
+	hash:  String
+	txHash:  String
+	sender:  String
+	contract:  String
+}
+
+type MsgInstantiateContract {
+	txHash:  String
+	sender:  String
+	codeID:  String
+	label:  String
+	msgInstantiateContract452: MsgInstantiateContract452
+	id:  ID!
+	index:  Int
+	height:  Int
+	msg:  String
+	hash:  String
+	contract:  String
+	admin:  String
+}
+
+type MsgExecuteContract {
+	sender:  String
+	codeID:  String
+	id:  ID!
+	index:  Int
+	height:  Int
+	label:  String
+	msg:  String
+	hash:  String
+	txHash:  String
+	contract:  String
+}
+
+

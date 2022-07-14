@@ -1,0 +1,7 @@
+{
+    "db_user": "postgres",
+    "db_password": "postgres",
+    "db_name": "postgres",
+    "schema_path": "schema.graphql",
+    "resolvers_path": "schema/"
+}
