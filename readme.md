@@ -19,3 +19,19 @@ GraphQL server needs to be restarted if we want to have newest changes:
 ```
 go run cmd/server/main.go --config config.json
 ```
+
+
+API is hosted on: http://localhost:8080/query
+example query:
+```
+query {
+	msgInstantiateContract(height: 3804888){
+		index
+		height
+		txHash
+		msg
+ 		msgInstantiateContract452{
+ 			symbol
+ 		}
+	}
+```
