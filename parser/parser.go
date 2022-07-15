@@ -116,7 +116,7 @@ func (p *Parser) generateEntitySchema(msg map[string]interface{}, name string) m
 		switch reflect.TypeOf(v) {
 
 		case reflect.TypeOf(""):
-			entitySchema[k] = "String"
+			entitySchema[strcase.ToLowerCamel(k)] = "String"
 
 		case reflect.TypeOf(map[string]interface{}{}):
 			entityName := strcase.ToLowerCamel(deleteS(fmt.Sprintf("%s %s", name, k)))
@@ -137,7 +137,7 @@ func (p *Parser) generateEntitySchema(msg map[string]interface{}, name string) m
 			p.schema["Query"].(map[string]interface{})[entityName] = fmt.Sprintf("[%s]", entityNameCamel)
 
 		case reflect.TypeOf(float64(0)):
-			entitySchema[k] = "Int"
+			entitySchema[strcase.ToLowerCamel(k)] = "Int"
 
 		default:
 			fmt.Println("k: ", k, " v: ", v)
