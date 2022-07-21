@@ -1,34 +1,33 @@
-package parser
+package worker
 
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 	"strconv"
 
-	"juno-contracts-worker/database"
-	"juno-contracts-worker/schema/mapping"
+	"juno-contracts-worker/indexer"
+	"juno-contracts-worker/sync"
 
 	"github.com/iancoleman/strcase"
 )
 
-type Parser struct {
-	db     *database.DB
-	schema map[string]interface{}
+type Worker struct {
+	indexer *indexer.Service
+	sync    *sync.Service
 }
 
-func New(db *database.DB, schema map[string]interface{}) *Parser {
-	return &Parser{db: db, schema: schema}
+func New(indexer *indexer.Service, sync *sync.Service) *Worker {
+	return &Worker{indexer: indexer, sync: sync}
 }
 
-func (p *Parser) StartParsing(name string, height int32) error {
+func (w *Worker) Start(name string, height int32) error {
 	var id, txHash, msg string
 	var index, h int32 = 0, height
 	fields := []string{"id", "index", "tx_hash", "msg"}
 
 	for {
-		rows, err := p.db.Query(strcase.ToSnake(name), fields, &h, nil)
+		rows, err := w.db.Query(strcase.ToSnake(name), fields, &h, nil)
 		if err != nil {
 			return err
 		}
@@ -40,20 +39,20 @@ func (p *Parser) StartParsing(name string, height int32) error {
 				return err
 			}
 
-			if err = p.saveEntity(id, name[0:len(name)-1], msg); err != nil {
+			if err = w.saveEntity(id, name[0:len(name)-1], msg); err != nil {
 				return err
 			}
 
 		}
 
-		if err = p.db.UpdateStateHeight(h); err != nil {
+		if err = w.db.Upda(h); err != nil {
 			return err
 		}
 		h++
 	}
 }
 
-func (p *Parser) saveEntity(parentID, name, msg string) error {
+func (w *Worker) saveEntity(parentID, name, msg string) error {
 	var jsonMap map[string]interface{}
 
 	err := json.Unmarshal([]byte(msg), &jsonMap)
@@ -65,42 +64,39 @@ func (p *Parser) saveEntity(parentID, name, msg string) error {
 	entityName := parentName + getCodeId(jsonMap["codeId"])
 
 	if msg := jsonMap["msg"]; msg != nil {
-		return p.processMsg(msg.(map[string]interface{}), parentID, entityName, parentName)
+		return w.processMsg(msg.(map[string]interface{}), parentID, entityName, parentName)
 	}
 
 	return nil
 }
 
-func (p *Parser) processMsg(msg map[string]interface{}, parentID, name, parentName string) error {
-	entitySchema := p.schema[name]
+func (w *Worker) processMsg(msg map[string]interface{}, parentID, name, parentName string) error {
+	entitySchema := w.schema[name]
 	if entitySchema == nil {
 		lowerCamelName := strcase.ToLowerCamel(name)
-		entitySchema = p.generateEntitySchema(msg, name)
-		p.schema[name] = entitySchema
-		p.schema[parentName].(map[string]interface{})[lowerCamelName] = name
-		p.schema["Query"].(map[string]interface{})[lowerCamelName] = fmt.Sprintf("[%s]", name)
+		entitySchema = w.generateEntitySchema(msg, name)
+		w.schema[name] = entitySchema
+		w.schema[parentName].(map[string]interface{})[lowerCamelName] = name
+		w.schema["Query"].(map[string]interface{})[lowerCamelName] = fmt.Sprintf("[%s]", name)
 
-		if err := p.db.CreateTable(entitySchema.(map[string]interface{}), strcase.ToSnake(name)); err != nil {
+		if err := w.db.CreateTable(entitySchema.(map[string]interface{}), strcase.ToSnake(name)); err != nil {
 			fmt.Println("could not create entity, ", err)
 			return err
 		}
 
-		if err := p.db.CreateIndex(strcase.ToSnake(name), strcase.ToSnake(parentName+"s"), strcase.ToSnake(name)); err != nil {
+		if err := w.db.CreateIndex(strcase.ToSnake(name), strcase.ToSnake(parentName+"s"), strcase.ToSnake(name)); err != nil {
 			return err
 		}
 
-		if err := p.saveNewSchema(); err != nil {
-			return err
-		}
 	}
 
-	entityID, err := p.db.InsertJsonIntoTable(msg, strcase.ToSnake(name))
+	entityID, err := w.db.InsertJsonIntoTable(msg, strcase.ToSnake(name))
 	if err != nil {
 		fmt.Println("Could not insert: ", err)
 		return err
 	}
 
-	if err := p.db.LinkTable(parentID, entityID, strcase.ToSnake(name), strcase.ToSnake(parentName+"s")); err != nil {
+	if err := w.db.LinkTable(parentID, entityID, strcase.ToSnake(name), strcase.ToSnake(parentName+"s")); err != nil {
 		fmt.Println("Could not link: ", err)
 		return err
 	}
@@ -108,7 +104,7 @@ func (p *Parser) processMsg(msg map[string]interface{}, parentID, name, parentNa
 	return nil
 }
 
-func (p *Parser) generateEntitySchema(msg map[string]interface{}, name string) map[string]interface{} {
+func (w *Worker) generateEntitySchema(msg map[string]interface{}, name string) map[string]interface{} {
 	name = deleteS(name)
 
 	entitySchema := make(map[string]interface{})
@@ -121,20 +117,20 @@ func (p *Parser) generateEntitySchema(msg map[string]interface{}, name string) m
 		case reflect.TypeOf(map[string]interface{}{}):
 			entityName := strcase.ToLowerCamel(deleteS(fmt.Sprintf("%s %s", name, k)))
 			entityNameCamel := strcase.ToCamel(entityName)
-			nestedEntitySchema := p.generateEntitySchema(v.(map[string]interface{}), entityName)
+			nestedEntitySchema := w.generateEntitySchema(v.(map[string]interface{}), entityName)
 			entitySchema[entityName] = nestedEntitySchema
-			p.schema[entityNameCamel] = nestedEntitySchema
-			p.schema["Query"].(map[string]interface{})[entityName] = fmt.Sprintf("[%s]", entityNameCamel)
+			w.schema[entityNameCamel] = nestedEntitySchema
+			w.schema["Query"].(map[string]interface{})[entityName] = fmt.Sprintf("[%s]", entityNameCamel)
 
 		case reflect.TypeOf([]interface{}{}):
 			entityName := strcase.ToLowerCamel(deleteS(fmt.Sprintf("%s %s", name, k)))
 			entityNameCamel := strcase.ToCamel(entityName)
 			entity := v.([]interface{})[0].(map[string]interface{})
-			nestedEntitySchema := p.generateEntitySchema(entity, entityName)
+			nestedEntitySchema := w.generateEntitySchema(entity, entityName)
 			entitySchema[entityName] = fmt.Sprintf("[%s]", entityNameCamel)
 			fmt.Println("is it good key?: ", entityNameCamel)
-			p.schema[entityNameCamel] = nestedEntitySchema
-			p.schema["Query"].(map[string]interface{})[entityName] = fmt.Sprintf("[%s]", entityNameCamel)
+			w.schema[entityNameCamel] = nestedEntitySchema
+			w.schema["Query"].(map[string]interface{})[entityName] = fmt.Sprintf("[%s]", entityNameCamel)
 
 		case reflect.TypeOf(float64(0)):
 			entitySchema[strcase.ToLowerCamel(k)] = "Int"
@@ -170,8 +166,4 @@ func getCodeId(codeId interface{}) string {
 		fmt.Println("codeID type; ", reflect.TypeOf(codeId))
 		return ""
 	}
-}
-
-func (p *Parser) saveNewSchema() error {
-	return os.WriteFile("schema.graphql", []byte(mapping.ParseMapToSchema(p.schema)), os.ModePerm)
 }

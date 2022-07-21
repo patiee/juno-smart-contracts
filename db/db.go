@@ -1,4 +1,4 @@
-package database
+package db
 
 import (
 	"database/sql"
@@ -15,43 +15,24 @@ import (
 )
 
 type DB struct {
-	conn   *sql.DB
-	schema map[string]interface{}
+	conn *sql.DB
 }
 
-func New(schema map[string]interface{}, user, password, dbName string) (*DB, error) {
+func New(user, password, dbName string) (db *DB, err error) {
 	dbinfo := fmt.Sprintf("user=%s password=%s dbname=%s sslmode=disable",
 		user, password, dbName)
-	conn, err := sql.Open("postgres", dbinfo)
+
+	db.conn, err = sql.Open("postgres", dbinfo)
 	if err != nil {
-		return nil, errors.New(fmt.Sprintf("Could not connect with database: %s", err))
+		return nil, fmt.Errorf("could not connect with database: %w", err)
 	}
-	db := &DB{conn: conn, schema: schema}
-	if err = db.InitStateTable(); err != nil {
-		return nil, err
-	}
+
 	return db, nil
 }
 
 func (db *DB) Close() {
 	db.conn.Close()
 }
-
-func (db *DB) InitStateTable() error {
-	createTable := `
-	CREATE TABLE IF NOT EXISTS app.contract_sync (
-		id SERIAL PRIMARY KEY,
-		height INT
-	);`
-	_, err := db.conn.Exec(createTable)
-	if err != nil {
-		return err
-	}
-	createUniqueIndex := `CREATE UNIQUE INDEX IF NOT EXISTS contract_sync_height ON app.contract_sync (height);`
-	_, err = db.conn.Exec(createUniqueIndex)
-	return err
-}
-
 func (db *DB) Query(tableName string, fields []string, height *int32, id *string) (*sql.Rows, error) {
 	whereQ := "WHERE "
 	if height != nil && *height != 0 {
@@ -76,41 +57,13 @@ func (db *DB) Query(tableName string, fields []string, height *int32, id *string
 	return rows, nil
 }
 
-func (db *DB) GetStateHeight() (height int32, err error) {
-	q := `SELECT height FROM app.contract_sync;`
-
-	rows, err := db.conn.Query(q)
-	if err != nil {
-		fmt.Println("error: ", err)
-		return 0, errors.New(fmt.Sprintf("Could not query contract state sync height: %s", err))
-	}
-
-	for rows.Next() {
-		if err = rows.Scan(&height); err != nil {
-			return 0, err
-		}
-	}
-	return height, nil
-}
-
-func (db *DB) UpdateStateHeight(height int32) error {
-	q := fmt.Sprintf(`INSERT INTO app.contract_sync (height)
-	VALUES('%d') 
-	ON CONFLICT (height) 
-	DO 
-	   UPDATE SET height = EXCLUDED.height;`, height)
-
-	_, err := db.conn.Exec(q)
-	return err
-}
-
 func (db *DB) CreateIndex(idxName, parentTableName, tableName string) error {
 	createIndex := fmt.Sprintf(`ALTER TABLE app.%s ADD COLUMN IF NOT EXISTS %s TEXT REFERENCES app.%s;`, parentTableName, idxName, tableName)
 	_, err := db.conn.Exec(createIndex)
 	return err
 }
 
-func (db *DB) CreateTable(schema map[string]interface{}, name string) error {
+func (db *DB) CreateTable3(schema map[string]interface{}, name string) error {
 	indexesStr, err := db.printIndexesAndCreateNestedTables(schema, name)
 	if err != nil {
 		return err
@@ -264,4 +217,20 @@ func (db *DB) LinkTable(id, linkID, idxName, tableName string) error {
 	}
 
 	return nil
+}
+
+type Fields map[string]interface{}
+
+func (f *Fields) CreateTableString() (s string) {
+	for k, v := range *f {
+		s += fmt.Sprintf("%s %s,\n", k, v)
+	}
+	return s[0 : len(s)-3]
+}
+
+func (f *Fields) SelectString() (s string) {
+	for k := range *f {
+		s += fmt.Sprintf("%s, ", k)
+	}
+	return s[0 : len(s)-2]
 }
