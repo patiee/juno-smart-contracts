@@ -8,6 +8,7 @@ import (
 
 	"juno-contracts-worker/indexer"
 	"juno-contracts-worker/sync"
+	"juno-contracts-worker/utils"
 
 	"github.com/iancoleman/strcase"
 )
@@ -27,26 +28,28 @@ func (w *Worker) Start(name string, height int32) error {
 	fields := []string{"id", "index", "tx_hash", "msg"}
 
 	for {
-		rows, err := w.db.Query(strcase.ToSnake(name), fields, &h, nil)
+		rows, err := w.indexer.QueryFields(strcase.ToSnake(name), fields, &h, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("could not query message, height: %d err: %w", h, err)
 		}
 
-		fmt.Println("Processing height: ", h)
-
+		idx := 0
 		for rows.Next() {
+			fmt.Printf("Processing height: %d msg: %d", height, idx)
+
 			if err = rows.Scan(&id, &index, &txHash, &msg); err != nil {
-				return err
+				return fmt.Errorf("could not read fields, height: %d message index: %d err: %w", h, idx, err)
 			}
 
 			if err = w.saveEntity(id, name[0:len(name)-1], msg); err != nil {
-				return err
+				return fmt.Errorf("could not save entity, height: %d message index: %d err: %w", h, idx, err)
 			}
 
+			idx++
 		}
 
-		if err = w.db.Upda(h); err != nil {
-			return err
+		if err = w.sync.UpdateSyncHeight(h); err != nil {
+			return fmt.Errorf("could not update sync height: %d err: %w", h, err)
 		}
 		h++
 	}
@@ -57,83 +60,101 @@ func (w *Worker) saveEntity(parentID, name, msg string) error {
 
 	err := json.Unmarshal([]byte(msg), &jsonMap)
 	if err != nil {
-		return err
+		return fmt.Errorf("could not unmarshal msg: %w", err)
 	}
 
-	parentName := strcase.ToCamel(name)
-	entityName := parentName + getCodeId(jsonMap["codeId"])
+	parentName := strcase.ToSnake(name)
+	codeID := getCodeId(jsonMap["codeId"])
+	if codeID == "" {
+		return fmt.Errorf("code id could not be nil! %s %s", name, parentID)
+	}
+	entityName := fmt.Sprintf("%s_%s", parentName, codeID)
 
 	if msg := jsonMap["msg"]; msg != nil {
-		return w.processMsg(msg.(map[string]interface{}), parentID, entityName, parentName)
+		if err := w.processMsg(msg.(map[string]interface{}), parentID, entityName, parentName); err != nil {
+			return fmt.Errorf("could not process message: %w", err)
+		}
 	}
 
 	return nil
 }
 
 func (w *Worker) processMsg(msg map[string]interface{}, parentID, name, parentName string) error {
-	entitySchema := w.schema[name]
-	if entitySchema == nil {
-		lowerCamelName := strcase.ToLowerCamel(name)
-		entitySchema = w.generateEntitySchema(msg, name)
-		w.schema[name] = entitySchema
-		w.schema[parentName].(map[string]interface{})[lowerCamelName] = name
-		w.schema["Query"].(map[string]interface{})[lowerCamelName] = fmt.Sprintf("[%s]", name)
-
-		if err := w.db.CreateTable(entitySchema.(map[string]interface{}), strcase.ToSnake(name)); err != nil {
-			fmt.Println("could not create entity, ", err)
-			return err
-		}
-
-		if err := w.db.CreateIndex(strcase.ToSnake(name), strcase.ToSnake(parentName+"s"), strcase.ToSnake(name)); err != nil {
-			return err
-		}
-
-	}
-
-	entityID, err := w.db.InsertJsonIntoTable(msg, strcase.ToSnake(name))
+	parentName += "s"
+	tableExists, err := w.indexer.TableExists(name)
 	if err != nil {
-		fmt.Println("Could not insert: ", err)
-		return err
+		return fmt.Errorf("could not verify if table %s exists, err: %w", name, err)
 	}
 
-	if err := w.db.LinkTable(parentID, entityID, strcase.ToSnake(name), strcase.ToSnake(parentName+"s")); err != nil {
-		fmt.Println("Could not link: ", err)
-		return err
+	if !tableExists {
+		order, tables := w.GenerateTablesForEntity(msg, name)
+		for _, tableName := range order {
+			if err := w.indexer.CreateTable(tableName, tables[tableName].(map[string]interface{})); err != nil {
+				return fmt.Errorf("could not create table %s, err: %w", tableName, err)
+			}
+		}
+
+		if err := w.indexer.CreateIndex(name, parentName, name); err != nil {
+			return fmt.Errorf("could not create index %s with %s, err: %w", name, parentName, err)
+		}
+
+	}
+
+	entityID, err := w.indexer.SaveJson(name, msg)
+	if err != nil {
+		return fmt.Errorf("could not save json message, err: %w", err)
+	}
+
+	if err := w.indexer.LinkTable(parentID, entityID, name, parentName); err != nil {
+		return fmt.Errorf("could not link table %s with %s, err: %w", name, parentName, err)
 	}
 
 	return nil
 }
 
-func (w *Worker) generateEntitySchema(msg map[string]interface{}, name string) map[string]interface{} {
-	name = deleteS(name)
+func (w *Worker) GenerateTablesForEntity(msg map[string]interface{}, name string) ([]string, map[string]interface{}) {
+	name = utils.DeleteS(name)
 
-	entitySchema := make(map[string]interface{})
+	order := make([]string, 0)
+	relations := make([]string, 0)
+	entityMap := make(map[string]interface{})
+	rootEntity := make(map[string]interface{})
 	for k, v := range msg {
 		switch reflect.TypeOf(v) {
 
 		case reflect.TypeOf(""):
-			entitySchema[strcase.ToLowerCamel(k)] = "String"
+			rootEntity[strcase.ToSnake(k)] = "TEXT"
 
 		case reflect.TypeOf(map[string]interface{}{}):
-			entityName := strcase.ToLowerCamel(deleteS(fmt.Sprintf("%s %s", name, k)))
-			entityNameCamel := strcase.ToCamel(entityName)
-			nestedEntitySchema := w.generateEntitySchema(v.(map[string]interface{}), entityName)
-			entitySchema[entityName] = nestedEntitySchema
-			w.schema[entityNameCamel] = nestedEntitySchema
-			w.schema["Query"].(map[string]interface{})[entityName] = fmt.Sprintf("[%s]", entityNameCamel)
+			entityName := strcase.ToSnake(utils.DeleteS(fmt.Sprintf("%s %s", name, k)))
+			entityOrder, nestedEntity := w.GenerateTablesForEntity(v.(map[string]interface{}), entityName)
+			for k, e := range nestedEntity {
+				entityMap[k] = e
+			}
+			rootEntity[entityName] = fmt.Sprintf("UUID REFERENCES app.%s", entityName)
+			order = append(order, entityOrder...)
 
-		case reflect.TypeOf([]interface{}{}):
-			entityName := strcase.ToLowerCamel(deleteS(fmt.Sprintf("%s %s", name, k)))
-			entityNameCamel := strcase.ToCamel(entityName)
-			entity := v.([]interface{})[0].(map[string]interface{})
-			nestedEntitySchema := w.generateEntitySchema(entity, entityName)
-			entitySchema[entityName] = fmt.Sprintf("[%s]", entityNameCamel)
-			fmt.Println("is it good key?: ", entityNameCamel)
-			w.schema[entityNameCamel] = nestedEntitySchema
-			w.schema["Query"].(map[string]interface{})[entityName] = fmt.Sprintf("[%s]", entityNameCamel)
+		case reflect.TypeOf([]interface{}{}), reflect.TypeOf([]map[string]interface{}{}):
+			entityName := strcase.ToSnake(utils.DeleteS(fmt.Sprintf("%s %s", name, k)))
+			entityOrder, nestedEntity := w.GenerateTablesForEntity(v.([]interface{})[0].(map[string]interface{}), entityName)
+			for k, e := range nestedEntity {
+				entityMap[k] = e
+			}
 
-		case reflect.TypeOf(float64(0)):
-			entitySchema[strcase.ToLowerCamel(k)] = "Int"
+			relationTableName := entityName + "_r"
+			entityMap[relationTableName] = map[string]interface{}{
+				entityName: "UUID NOT NULL",
+				name:       "UUID NOT NULL",
+				fmt.Sprintf("FOREIGN KEY (%s) REFERENCES app.%s(id)", entityName, entityName): "",
+				fmt.Sprintf("FOREIGN KEY (%s) REFERENCES app.%s(id)", name, name):             "",
+				fmt.Sprintf("UNIQUE (%s, %s)", entityName, name):                              "",
+			}
+
+			order = append(order, entityOrder...)
+			relations = append(relations, relationTableName)
+
+		case reflect.TypeOf(float64(0)), reflect.TypeOf(int(0)):
+			rootEntity[strcase.ToSnake(k)] = "BIGINT"
 
 		default:
 			fmt.Println("k: ", k, " v: ", v)
@@ -141,16 +162,8 @@ func (w *Worker) generateEntitySchema(msg map[string]interface{}, name string) m
 		}
 
 	}
-	entitySchema["id"] = "ID!"
-	return entitySchema
-}
-
-func deleteS(str string) string {
-	lastCh := len(str) - 1
-	if string(str[lastCh]) == "s" {
-		str = str[0:lastCh]
-	}
-	return str
+	entityMap[name] = rootEntity
+	return append(append(order, name), relations...), entityMap
 }
 
 func getCodeId(codeId interface{}) string {
