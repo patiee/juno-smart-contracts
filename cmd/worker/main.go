@@ -5,9 +5,10 @@ import (
 	"os"
 
 	"juno-contracts-worker/config"
-	"juno-contracts-worker/database"
-	"juno-contracts-worker/parser"
-	"juno-contracts-worker/schema/mapping"
+	"juno-contracts-worker/db"
+	"juno-contracts-worker/indexer"
+	"juno-contracts-worker/sync"
+	"juno-contracts-worker/worker"
 )
 
 func main() {
@@ -27,15 +28,7 @@ func main() {
 		return
 	}
 
-	schema, err := os.ReadFile(config.SchemaPath)
-	if err != nil {
-		println(err)
-		return
-	}
-
-	schemaMap := mapping.ParseSchemaToMap(string(schema))
-
-	db, err := database.New(schemaMap, config.DB_User, config.DB_Password, config.DB_Name)
+	db, err := db.New(config.DB_User, config.DB_Password, config.DB_Name)
 	if err != nil {
 		fmt.Println("Could not connect with database: ", err)
 		return
@@ -43,11 +36,17 @@ func main() {
 	defer db.Close()
 
 	// err = db.UpdateStateHeight(3803514)
-	h, _ := db.GetStateHeight()
-	fmt.Println("Starting with height: ", h)
+	// h, _ := db.GetStateHeight()
+	// fmt.Println("Starting with height: ", h)
 
-	parser := parser.New(db, schemaMap)
-	if e := parser.StartParsing("msg_instantiate_contracts", 3804888); e != nil {
+	sync, err := sync.New(db)
+	if err != nil {
+		fmt.Println("Error while creating sync: ", err)
+		return
+	}
+
+	worker := worker.New(indexer.New(db), sync)
+	if e := worker.Start("msg_instantiate_contracts", 3807889); e != nil {
 		fmt.Println("Error while processing data: ", err)
 		return
 	}
