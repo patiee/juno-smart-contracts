@@ -35,7 +35,7 @@ func (w *Worker) Start(name string, height int32) error {
 
 		idx := 0
 		for rows.Next() {
-			fmt.Printf("Processing height: %d msg: %d", height, idx)
+			fmt.Printf("Processing height: %d msg: %d\n", h, idx)
 
 			if err = rows.Scan(&id, &index, &txHash, &msg); err != nil {
 				return fmt.Errorf("could not read fields, height: %d message index: %d err: %w", h, idx, err)
@@ -71,6 +71,7 @@ func (w *Worker) saveEntity(parentID, name, msg string) error {
 	entityName := fmt.Sprintf("%s_%s", parentName, codeID)
 
 	if msg := jsonMap["msg"]; msg != nil {
+		fmt.Println("Save: ", msg)
 		if err := w.processMsg(msg.(map[string]interface{}), parentID, entityName, parentName); err != nil {
 			return fmt.Errorf("could not process message: %w", err)
 		}
@@ -86,8 +87,9 @@ func (w *Worker) processMsg(msg map[string]interface{}, parentID, name, parentNa
 		return fmt.Errorf("could not verify if table %s exists, err: %w", name, err)
 	}
 
+	order, tables := w.GenerateTablesForEntity(msg, name)
+
 	if !tableExists {
-		order, tables := w.GenerateTablesForEntity(msg, name)
 		for _, tableName := range order {
 			if err := w.indexer.CreateTable(tableName, tables[tableName].(map[string]interface{})); err != nil {
 				return fmt.Errorf("could not create table %s, err: %w", tableName, err)
@@ -97,7 +99,12 @@ func (w *Worker) processMsg(msg map[string]interface{}, parentID, name, parentNa
 		if err := w.indexer.CreateIndex(name, parentName, name); err != nil {
 			return fmt.Errorf("could not create index %s with %s, err: %w", name, parentName, err)
 		}
-
+	} else {
+		for _, tableName := range order {
+			if err := w.indexer.CreateColumns(tableName, tables[tableName].(map[string]interface{})); err != nil {
+				return fmt.Errorf("could not create table columns  %s, err: %w", tableName, err)
+			}
+		}
 	}
 
 	entityID, err := w.indexer.SaveJson(name, msg)
@@ -120,41 +127,63 @@ func (w *Worker) GenerateTablesForEntity(msg map[string]interface{}, name string
 	entityMap := make(map[string]interface{})
 	rootEntity := make(map[string]interface{})
 	for k, v := range msg {
+		k = strcase.ToSnake(utils.DeleteS(k))
+
 		switch reflect.TypeOf(v) {
 
 		case reflect.TypeOf(""):
-			rootEntity[strcase.ToSnake(k)] = "TEXT"
+			fmt.Println("k: ", k, " type string?")
+			rootEntity[k] = "TEXT"
 
 		case reflect.TypeOf(map[string]interface{}{}):
+			fmt.Println("k: ", k, "type  map[string]interface{}{}")
 			entityName := strcase.ToSnake(utils.DeleteS(fmt.Sprintf("%s %s", name, k)))
 			entityOrder, nestedEntity := w.GenerateTablesForEntity(v.(map[string]interface{}), entityName)
-			for k, e := range nestedEntity {
-				entityMap[k] = e
+			for key, e := range nestedEntity {
+				entityMap[key] = e
 			}
-			rootEntity[entityName] = fmt.Sprintf("UUID REFERENCES app.%s", entityName)
+			rootEntity[entityName] = fmt.Sprintf("UUID REFERENCES app.%s", utils.UniqueShortName(entityName))
 			order = append(order, entityOrder...)
 
-		case reflect.TypeOf([]interface{}{}), reflect.TypeOf([]map[string]interface{}{}):
+		case reflect.TypeOf([]interface{}{}):
+			if isArray, arrayType := utils.IsArray(v.([]interface{})); isArray {
+				fmt.Printf("%s is string array", k)
+				switch arrayType {
+				case "String":
+					rootEntity[k] = "TEXT[]"
+				case "Boolean":
+					rootEntity[k] = "BOOLEAN[]"
+				default:
+					fmt.Println("Uknown array type")
+				}
+
+				continue
+			}
+
+			value := v.([]interface{})[0]
+
 			entityName := strcase.ToSnake(utils.DeleteS(fmt.Sprintf("%s %s", name, k)))
-			entityOrder, nestedEntity := w.GenerateTablesForEntity(v.([]interface{})[0].(map[string]interface{}), entityName)
+			entityOrder, nestedEntity := w.GenerateTablesForEntity(value.(map[string]interface{}), entityName)
 			for k, e := range nestedEntity {
 				entityMap[k] = e
 			}
 
 			relationTableName := entityName + "_r"
+			en := utils.UniqueShortName(entityName)
+			n := utils.UniqueShortName(name)
 			entityMap[relationTableName] = map[string]interface{}{
-				entityName: "UUID NOT NULL",
-				name:       "UUID NOT NULL",
-				fmt.Sprintf("FOREIGN KEY (%s) REFERENCES app.%s(id)", entityName, entityName): "",
-				fmt.Sprintf("FOREIGN KEY (%s) REFERENCES app.%s(id)", name, name):             "",
-				fmt.Sprintf("UNIQUE (%s, %s)", entityName, name):                              "",
+				en: "UUID NOT NULL",
+				n:  "UUID NOT NULL",
+				fmt.Sprintf("FOREIGN KEY (%s) REFERENCES app.%s(id)", en, en): "",
+				fmt.Sprintf("FOREIGN KEY (%s) REFERENCES app.%s(id)", n, n):   "",
+				fmt.Sprintf("UNIQUE (%s, %s)", en, n):                         "",
 			}
 
 			order = append(order, entityOrder...)
 			relations = append(relations, relationTableName)
 
 		case reflect.TypeOf(float64(0)), reflect.TypeOf(int(0)):
-			rootEntity[strcase.ToSnake(k)] = "BIGINT"
+			rootEntity[k] = "BIGINT"
 
 		default:
 			fmt.Println("k: ", k, " v: ", v)

@@ -9,6 +9,8 @@ import (
 	"juno-contracts-worker/indexer"
 	"juno-contracts-worker/sync"
 	"juno-contracts-worker/worker"
+
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -45,8 +47,19 @@ func main() {
 		return
 	}
 
-	worker := worker.New(indexer.New(db), sync)
-	if e := worker.Start("msg_instantiate_contracts", 3807889); e != nil {
+	log := &logrus.Logger{
+		Out:       os.Stdout,
+		Formatter: new(logrus.TextFormatter),
+		Hooks:     make(logrus.LevelHooks),
+		Level:     logrus.DebugLevel,
+	}
+
+	worker := worker.New(indexer.New(db, log), sync)
+	// if e := worker.Start("msg_instantiate_contracts", 3803514); e != nil {
+	// 	fmt.Println("Error while processing data: ", err)
+	// 	return
+	// }
+	if e := worker.Start("msg_execute_contracts", 3803514); e != nil {
 		fmt.Println("Error while processing data: ", err)
 		return
 	}

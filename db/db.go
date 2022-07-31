@@ -3,7 +3,9 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"juno-contracts-worker/utils"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -31,15 +33,32 @@ func (db *DB) Close() {
 func (db *DB) CreateTable(tableName string, fields Fields) error {
 	q := fmt.Sprintf(`
 	CREATE TABLE IF NOT EXISTS app.%s (
-		id UUID PRIMARY KEY,
-		%s
-	);`, tableName, fields.CreateTableString())
+		id UUID PRIMARY KEY%s
+	);`, utils.UniqueShortName(tableName), fields.CreateTableString())
 
-	fmt.Println("Create table: ", q)
+	fmt.Printf("Create table %s: query: %s", tableName, q)
 
 	if _, err := db.conn.Exec(q); err != nil {
 		return err
 	}
+
+	time.Sleep(500)
+
+	return nil
+}
+
+func (db *DB) CreateColumn(tableName, columnName, columnType string) error {
+	q := fmt.Sprintf(`ALTER TABLE app.%s ADD COLUMN IF NOT EXISTS %s %s;`,
+		utils.UniqueShortName(tableName), columnName, columnType)
+
+	fmt.Printf("Add column to table %s: query: %s\n", tableName, q)
+
+	if _, err := db.conn.Exec(q); err != nil {
+		fmt.Println("could not add column: ", err)
+		return err
+	}
+
+	time.Sleep(500)
 
 	return nil
 }
@@ -76,6 +95,7 @@ func (db *DB) Update(tableName string, fieldName, fieldValue string) error {
 
 func (db *DB) TableExists(tableName string) (bool, error) {
 	var str string
+	tableName = utils.UniqueShortName(tableName)
 	q := fmt.Sprintf("SELECT to_regclass('app.%s');", tableName)
 
 	fmt.Println("Table exists: ", q)
@@ -96,14 +116,21 @@ func (db *DB) TableExists(tableName string) (bool, error) {
 }
 
 func (db *DB) CreateIndex(idxName, parentTableName, tableName string) error {
-	q := fmt.Sprintf(`ALTER TABLE app.%s ADD COLUMN IF NOT EXISTS %s UUID REFERENCES app.%s;`, parentTableName, idxName, tableName)
+	idxName = utils.UniqueShortName(idxName)
+	tableName = utils.UniqueShortName(tableName)
+	q := fmt.Sprintf(`ALTER TABLE app.%s ADD COLUMN IF NOT EXISTS %s UUID REFERENCES app.%s;`,
+		parentTableName, idxName, tableName)
 	fmt.Println("Create index: ", q)
 	_, err := db.conn.Exec(q)
 	return err
 }
 
 func (db *DB) Insert(tableName string, values []any, fieldNames []string) error {
-	q := fmt.Sprintf(`INSERT INTO app.%s (%s) VALUES (%s)`, tableName, strings.Join(fieldNames, ", "), printValueNames(len(fieldNames)))
+	tableName = utils.UniqueShortName(tableName)
+	fieldNames = utils.AddUnderscoresIfMissing(fieldNames)
+
+	q := fmt.Sprintf(`INSERT INTO app.%s (%s) VALUES (%s)`,
+		tableName, strings.Join(fieldNames, ", "), printValueNames(len(fieldNames)))
 
 	fmt.Println("insert: ", q)
 	fmt.Println("values: ", values)
@@ -126,7 +153,9 @@ func printValueNames(len int) string {
 }
 
 func (db *DB) LinkTable(id, linkID, idxName, tableName string) error {
-	q := fmt.Sprintf(`UPDATE app.%s SET %s='%s' WHERE id='%s'`, tableName, idxName, linkID, id)
+	idxName = utils.UniqueShortName(idxName)
+	q := fmt.Sprintf(`UPDATE app.%s SET %s='%s' WHERE id='%s'`,
+		tableName, idxName, linkID, id)
 
 	fmt.Println("Link: ", q)
 	if _, err := db.conn.Exec(q); err != nil {
@@ -136,27 +165,21 @@ func (db *DB) LinkTable(id, linkID, idxName, tableName string) error {
 	return nil
 }
 
-// func isReference(val string) bool {
-// 	switch val {
-// 	case "String", "Int":
-// 		return false
-// 	default:
-// 		return true
-// 	}
-// }
-
 type Fields map[string]interface{}
 
-func (f *Fields) CreateTableString() (s string) {
-	for k, v := range *f {
-		s += fmt.Sprintf("%s %s,\n", k, v)
+func (f *Fields) CreateTableString() string {
+	if len(*f) == 0 {
+		return ""
 	}
-	return s[0 : len(s)-2]
-}
 
-func (f *Fields) SelectString() (s string) {
-	for k := range *f {
-		s += fmt.Sprintf("%s, ", k)
+	s := ",\n"
+
+	for k, v := range *f {
+		str := v.(string)
+		if strings.Contains(str, "REFERENCE") {
+			k = utils.UniqueShortName(k)
+		}
+		s += fmt.Sprintf("%s %s,\n", k, v)
 	}
 	return s[0 : len(s)-2]
 }
