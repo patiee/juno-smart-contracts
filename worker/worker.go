@@ -1,25 +1,29 @@
 package worker
 
 import (
-	"encoding/json"
-	"fmt"
-	"reflect"
-	"strconv"
-
+	"juno-contracts-worker/client"
 	"juno-contracts-worker/indexer"
 	"juno-contracts-worker/sync"
 	"juno-contracts-worker/utils"
 
 	"github.com/iancoleman/strcase"
+	"github.com/sirupsen/logrus"
+
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"strconv"
 )
 
 type Worker struct {
+	client  *client.Client
 	indexer *indexer.Service
+	log     *logrus.Logger
 	sync    *sync.Service
 }
 
-func New(indexer *indexer.Service, sync *sync.Service) *Worker {
-	return &Worker{indexer: indexer, sync: sync}
+func New(c *client.Client, i *indexer.Service, l *logrus.Logger, s *sync.Service) *Worker {
+	return &Worker{client: c, indexer: i, log: l, sync: s}
 }
 
 func (w *Worker) Start(name string, height int32) error {
@@ -64,14 +68,14 @@ func (w *Worker) saveEntity(parentID, name, msg string) error {
 	}
 
 	parentName := strcase.ToSnake(name)
-	codeID := getCodeId(jsonMap["codeId"])
+	codeID := w.getCodeId(jsonMap["codeId"])
 	if codeID == "" {
-		return fmt.Errorf("code id could not be nil! %s %s", name, parentID)
+		_ = w.client.GetContractInfo(jsonMap["contract"].(string))
+		return fmt.Errorf("code id cannot be empty %s %s", name, parentID)
 	}
 	entityName := fmt.Sprintf("%s_%s", parentName, codeID)
 
 	if msg := jsonMap["msg"]; msg != nil {
-		fmt.Println("Save: ", msg)
 		if err := w.processMsg(msg.(map[string]interface{}), parentID, entityName, parentName); err != nil {
 			return fmt.Errorf("could not process message: %w", err)
 		}
@@ -99,6 +103,7 @@ func (w *Worker) processMsg(msg map[string]interface{}, parentID, name, parentNa
 		if err := w.indexer.CreateIndex(name, parentName, name); err != nil {
 			return fmt.Errorf("could not create index %s with %s, err: %w", name, parentName, err)
 		}
+
 	} else {
 		for _, tableName := range order {
 			if err := w.indexer.CreateColumns(tableName, tables[tableName].(map[string]interface{})); err != nil {
@@ -132,11 +137,9 @@ func (w *Worker) GenerateTablesForEntity(msg map[string]interface{}, name string
 		switch reflect.TypeOf(v) {
 
 		case reflect.TypeOf(""):
-			fmt.Println("k: ", k, " type string?")
 			rootEntity[k] = "TEXT"
 
 		case reflect.TypeOf(map[string]interface{}{}):
-			fmt.Println("k: ", k, "type  map[string]interface{}{}")
 			entityName := strcase.ToSnake(utils.DeleteS(fmt.Sprintf("%s %s", name, k)))
 			entityOrder, nestedEntity := w.GenerateTablesForEntity(v.(map[string]interface{}), entityName)
 			for key, e := range nestedEntity {
@@ -146,8 +149,8 @@ func (w *Worker) GenerateTablesForEntity(msg map[string]interface{}, name string
 			order = append(order, entityOrder...)
 
 		case reflect.TypeOf([]interface{}{}):
+
 			if isArray, arrayType := utils.IsArray(v.([]interface{})); isArray {
-				fmt.Printf("%s is string array", k)
 				switch arrayType {
 				case "String":
 					rootEntity[k] = "TEXT[]"
@@ -186,16 +189,16 @@ func (w *Worker) GenerateTablesForEntity(msg map[string]interface{}, name string
 			rootEntity[k] = "BIGINT"
 
 		default:
-			fmt.Println("k: ", k, " v: ", v)
-			fmt.Println("unhandled type; ", reflect.TypeOf(v))
+			w.log.Debugf("Unhandled value type: %s key: %s", reflect.TypeOf(v).String(), k)
 		}
 
 	}
+
 	entityMap[name] = rootEntity
 	return append(append(order, name), relations...), entityMap
 }
 
-func getCodeId(codeId interface{}) string {
+func (w *Worker) getCodeId(codeId interface{}) string {
 	if codeId == nil {
 		return ""
 	}
@@ -205,7 +208,7 @@ func getCodeId(codeId interface{}) string {
 		code := codeId.(map[string]interface{})["low"].(float64)
 		return strconv.Itoa(int(code))
 	default:
-		fmt.Println("codeID type; ", reflect.TypeOf(codeId))
+		w.log.Debugf("Unknown codeID type: %s", reflect.TypeOf(codeId).String())
 		return ""
 	}
 }

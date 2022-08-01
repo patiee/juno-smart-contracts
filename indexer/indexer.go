@@ -1,17 +1,18 @@
 package indexer
 
 import (
-	"database/sql"
-	"fmt"
 	"juno-contracts-worker/db"
 	"juno-contracts-worker/utils"
-	"reflect"
-	"strconv"
-	"strings"
 
 	"github.com/google/uuid"
 	"github.com/iancoleman/strcase"
 	"github.com/sirupsen/logrus"
+
+	"database/sql"
+	"fmt"
+	"reflect"
+	"strconv"
+	"strings"
 )
 
 type manyToMany struct {
@@ -46,15 +47,15 @@ func (s *Service) CreateColumns(tableName string, fields map[string]interface{})
 
 	for k, v := range fields {
 		val := v.(string)
-		fmt.Println("key: ", k)
-		fmt.Println("value: ", val)
 		if strings.Contains(k, "UNIQUE") {
 			continue
+
 		} else if strings.Contains(k, "REFERENCES") {
 			k = utils.GetFieldName(k)
 			if err := s.db.CreateIndex(k, tableName, k); err != nil {
 				return err
 			}
+
 		} else if err := s.db.CreateColumn(tableName, k, val); err != nil {
 			return err
 		}

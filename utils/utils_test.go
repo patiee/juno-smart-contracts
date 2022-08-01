@@ -2,9 +2,10 @@ package utils_test
 
 import (
 	"juno-contracts-worker/utils"
-	"testing"
 
 	"github.com/stretchr/testify/suite"
+
+	"testing"
 )
 
 type Utils struct {

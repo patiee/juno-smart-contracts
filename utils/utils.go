@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -16,12 +15,10 @@ func DeleteS(str string) string {
 }
 
 func AddUnderscoresIfMissing(strs []string) []string {
-	fmt.Println("Before: ", strs)
 	underscores := make([]string, len(strs))
 	for idx, str := range strs {
 		underscores[idx] = AddUnderscoreIfMissing(str)
 	}
-	fmt.Println("After: ", underscores)
 	return underscores
 }
 
