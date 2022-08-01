@@ -64,8 +64,13 @@ func main() {
 	defer grpcClient.Close()
 
 	worker := worker.New(grpcClient, indexer.New(db, log), log, sync)
-	if e := worker.Start("msg_instantiate_contracts", 3803514); e != nil {
+	// if e := worker.Start("msg_instantiate_contracts", 3803514); e != nil {
+	// 	fmt.Println("Error while processing data: ", err)
+	// 	return
+	// }
+	if e := worker.Start("msg_execute_contracts", 4052931); e != nil {
 		fmt.Println("Error while processing data: ", err)
 		return
 	}
+
 }
