@@ -50,7 +50,7 @@ func (c *Client) GetContractInfo(contractAddress string) error {
 	)
 
 	if err != nil {
-		c.log.Errorf("can't get contract info, address: %s", contractAddress)
+		c.log.Errorf("can't get contract info, address: %s err: %s", contractAddress, err)
 		return err
 	}
 
