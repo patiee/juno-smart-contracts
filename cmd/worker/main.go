@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"os"
 
+	"juno-contracts-worker/client"
 	"juno-contracts-worker/config"
 	"juno-contracts-worker/db"
 	"juno-contracts-worker/indexer"
 	"juno-contracts-worker/sync"
 	"juno-contracts-worker/worker"
+
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -28,7 +31,14 @@ func main() {
 		return
 	}
 
-	db, err := db.New(config.DB_User, config.DB_Password, config.DB_Name)
+	log := &logrus.Logger{
+		Out:       os.Stdout,
+		Formatter: new(logrus.TextFormatter),
+		Hooks:     make(logrus.LevelHooks),
+		Level:     logrus.DebugLevel,
+	}
+
+	db, err := db.New(log, config.DbUser, config.DbPassword, config.DbName)
 	if err != nil {
 		fmt.Println("Could not connect with database: ", err)
 		return
@@ -45,10 +55,17 @@ func main() {
 		return
 	}
 
-	worker := worker.New(indexer.New(db), sync)
-	if e := worker.Start("msg_instantiate_contracts", 3807889); e != nil {
+	grpcClient, err := client.New(config.GrpcUrl, log)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	defer grpcClient.Close()
+
+	worker := worker.New(grpcClient, indexer.New(db, log), log, sync)
+	if e := worker.Start("msg_instantiate_contracts", 3803514); e != nil {
 		fmt.Println("Error while processing data: ", err)
 		return
 	}
-
 }

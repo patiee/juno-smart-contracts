@@ -2,21 +2,19 @@ package config
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 )
 
 type Config struct {
-	DB_User       string `json:"db_user"`
-	DB_Password   string `json:"db_password"`
-	DB_Name       string `json:"db_name"`
-	SchemaPath    string `json:"schema_path"`
+	DbUser        string `json:"db_user"`
+	DbPassword    string `json:"db_password"`
+	DbName        string `json:"db_name"`
+	GrpcUrl       string `json:"grpc_url"`
 	ResolversPath string `json:"resolvers_path"`
+	SchemaPath    string `json:"schema_path"`
 }
 
 func ReadConfig(path string) (*Config, error) {
-	fmt.Println("Reading config")
-
 	file, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
