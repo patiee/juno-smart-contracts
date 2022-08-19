@@ -5,7 +5,6 @@ import (
 
 	"github.com/CosmWasm/wasmd/x/wasm/types"
 	"github.com/sirupsen/logrus"
-
 	"google.golang.org/grpc"
 )
 

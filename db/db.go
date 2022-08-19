@@ -1,14 +1,15 @@
 package db
 
 import (
-	"juno-contracts-worker/utils"
-
 	"database/sql"
 	"fmt"
 	"strings"
 
 	_ "github.com/lib/pq"
 	"github.com/sirupsen/logrus"
+
+	"juno-contracts-worker/db/model"
+	"juno-contracts-worker/utils"
 )
 
 type DB struct {
@@ -36,7 +37,7 @@ func (db *DB) Close() {
 	db.conn.Close()
 }
 
-func (db *DB) CreateTable(tableName string, fields Fields) error {
+func (db *DB) CreateTable(tableName string, fields model.Fields) error {
 	tableName = utils.UniqueShortName(tableName)
 	q := fmt.Sprintf(`
 	CREATE TABLE IF NOT EXISTS app.%s (
@@ -67,28 +68,17 @@ func (db *DB) CreateColumn(tableName, columnName, columnType string) error {
 	return nil
 }
 
-func (db *DB) Select(tableName string, fields []string, height *int32, id *string) (*sql.Rows, error) {
-	whereQ := "WHERE "
-	if height != nil && *height != 0 {
-		whereQ += fmt.Sprintf("height = %d ", *height)
-	}
-
-	if id != nil && *id != "" {
-		whereQ += fmt.Sprintf("id = '%s' ", *id)
-	}
-
-	if len(whereQ) < 8 {
-		whereQ = ""
-	}
-
-	q := fmt.Sprintf("SELECT %s FROM app.%s %s;", strings.Join(fields, ", "), tableName, whereQ)
+func (db *DB) Select(tableName string, fields []string, qParams *model.QParameters) (*sql.Rows, error) {
+	q := fmt.Sprintf("SELECT %s FROM app.%s %s;",
+		strings.Join(fields, ", "), tableName, qParams.Print())
 
 	db.log.Debugf("Select query: %s", q)
 	return db.conn.Query(q)
 }
 
-func (db *DB) Update(tableName string, fieldName, fieldValue string) error {
-	q := fmt.Sprintf("UPDATE app.%s SET %s=%s;", tableName, fieldName, fieldValue)
+func (db *DB) Update(qParams model.QParameters, tableName, fieldName, fieldValue string) error {
+	q := fmt.Sprintf("UPDATE app.%s SET %s=%s %s;",
+		tableName, fieldName, fieldValue, qParams.Print())
 
 	db.log.Debugf("Update query: %s", q)
 
@@ -99,7 +89,8 @@ func (db *DB) Update(tableName string, fieldName, fieldValue string) error {
 func (db *DB) TableExists(tableName string) (bool, error) {
 	var str string
 	tableName = utils.UniqueShortName(tableName)
-	q := fmt.Sprintf("SELECT to_regclass('app.%s');", tableName)
+	q := fmt.Sprintf("SELECT to_regclass('app.%s');",
+		tableName)
 
 	rows, err := db.conn.Query(q)
 	if err != nil {
@@ -116,22 +107,33 @@ func (db *DB) TableExists(tableName string) (bool, error) {
 	return true, nil
 }
 
-func (db *DB) CreateIndex(idxName, parentTableName, tableName string) error {
+func (db *DB) CreateUniqueIndex(columns []string, indexName, tableName string) error {
+	indexName = utils.UniqueShortName(indexName)
+	tableName = utils.UniqueShortName(tableName)
+	q := fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS %s ON app.%s(%s);`,
+		indexName, tableName, strings.Join(columns, ", "))
+
+	db.log.Debugf("Create unique index query: %s", q)
+	_, err := db.conn.Exec(q)
+	return err
+}
+
+func (db *DB) AddColumn(idxName, parentTableName, tableName string) error {
 	idxName = utils.UniqueShortName(idxName)
 	tableName = utils.UniqueShortName(tableName)
 	q := fmt.Sprintf(`ALTER TABLE app.%s ADD COLUMN IF NOT EXISTS %s UUID REFERENCES app.%s;`,
 		parentTableName, idxName, tableName)
 
-	db.log.Debugf("Create index query: ", q)
+	db.log.Debugf("Create index query: %s", q)
 	_, err := db.conn.Exec(q)
 	return err
 }
 
-func (db *DB) Insert(tableName string, values []any, fieldNames []string) error {
+func (db *DB) Insert(tableName string, fieldNames []string, values []any) error {
 	tableName = utils.UniqueShortName(tableName)
 	fieldNames = utils.AddUnderscoresIfMissing(fieldNames)
 
-	q := fmt.Sprintf(`INSERT INTO app.%s (%s) VALUES (%s)`,
+	q := fmt.Sprintf(`INSERT INTO app.%s (%s) VALUES (%s) ON CONFLICT DO NOTHING;`,
 		tableName, strings.Join(fieldNames, ", "), printValueNames(len(fieldNames)))
 
 	if _, err := db.conn.Exec(q, values...); err != nil {
@@ -153,7 +155,7 @@ func printValueNames(len int) string {
 
 func (db *DB) LinkTable(id, linkID, idxName, tableName string) error {
 	idxName = utils.UniqueShortName(idxName)
-	q := fmt.Sprintf(`UPDATE app.%s SET %s='%s' WHERE id='%s'`,
+	q := fmt.Sprintf(`UPDATE app.%s SET %s='%s' WHERE id='%s';`,
 		tableName, idxName, linkID, id)
 
 	db.log.Debugf("Link query: ", q)
@@ -162,23 +164,4 @@ func (db *DB) LinkTable(id, linkID, idxName, tableName string) error {
 	}
 
 	return nil
-}
-
-type Fields map[string]interface{}
-
-func (f *Fields) CreateTableString() string {
-	if len(*f) == 0 {
-		return ""
-	}
-
-	s := ",\n"
-
-	for k, v := range *f {
-		str := v.(string)
-		if strings.Contains(str, "REFERENCE") {
-			k = utils.UniqueShortName(k)
-		}
-		s += fmt.Sprintf("%s %s,\n", k, v)
-	}
-	return s[0 : len(s)-2]
 }
