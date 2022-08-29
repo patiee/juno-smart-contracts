@@ -1,9 +1,9 @@
 package utils_test
 
 import (
-	"juno-contracts-worker/utils"
-
 	"github.com/stretchr/testify/suite"
+
+	"juno-contracts-worker/utils"
 
 	"testing"
 )

@@ -6,12 +6,14 @@ import (
 )
 
 type Config struct {
-	DbUser        string `json:"db_user"`
-	DbPassword    string `json:"db_password"`
-	DbName        string `json:"db_name"`
-	GrpcUrl       string `json:"grpc_url"`
-	ResolversPath string `json:"resolvers_path"`
-	SchemaPath    string `json:"schema_path"`
+	DbUser        string   `json:"db_user"`
+	DbPassword    string   `json:"db_password"`
+	DbName        string   `json:"db_name"`
+	LogLevel      string   `json:"log_level"`
+	GrpcUrl       string   `json:"grpc_url"`
+	ResolversPath string   `json:"resolvers_path"`
+	SchemaPath    string   `json:"schema_path"`
+	Messages      []string `json:"messages"`
 }
 
 func ReadConfig(path string) (*Config, error) {
