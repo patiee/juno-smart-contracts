@@ -39,16 +39,13 @@ func main() {
 		Level:     utils.LogLevel(config.LogLevel),
 	}
 
-	db, err := db.New(log, config.DbUser, config.DbPassword, config.DbName)
+	dbService, err := db.New(log, config.DbUser, config.DbPassword, config.DbName)
 	if err != nil {
 		fmt.Println("Could not connect with database: ", err)
 		return
 	}
-	defer db.Close()
-
-	// err = db.UpdateStateHeight(3803514)
-	// h, _ := db.GetStateHeight()
-	// fmt.Println("Starting with height: ", h)
+	dbWithLimiter := db.NewServiceWithConnectionLimiter(dbService)
+	defer dbWithLimiter.Close()
 
 	grpcClient, err := client.New(config.GrpcUrl, log)
 	if err != nil {
@@ -58,9 +55,9 @@ func main() {
 
 	defer grpcClient.Close()
 
-	indexer := indexer.New(grpcClient, db, log)
+	indexer := indexer.New(grpcClient, dbWithLimiter, log)
 
-	worker, err := worker.New(db, log, indexer)
+	worker, err := worker.New(dbWithLimiter, log, indexer)
 	if err != nil {
 		fmt.Println("Error while creating sync: ", err)
 		return

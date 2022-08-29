@@ -27,11 +27,11 @@ type manyToMany struct {
 
 type Service struct {
 	client *client.Client
-	db     *db.DB
+	db     db.ServiceInterface
 	log    *logrus.Logger
 }
 
-func New(c *client.Client, d *db.DB, l *logrus.Logger) *Service {
+func New(c *client.Client, d db.ServiceInterface, l *logrus.Logger) *Service {
 	return &Service{client: c, db: d, log: l}
 }
 
