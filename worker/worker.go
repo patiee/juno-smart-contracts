@@ -16,12 +16,12 @@ import (
 const syncTableName = "sync"
 
 type Service struct {
-	db      *db.DB
+	db      db.ServiceInterface
 	log     *logrus.Logger
 	indexer *indexer.Service
 }
 
-func New(db *db.DB, l *logrus.Logger, i *indexer.Service) (*Service, error) {
+func New(db db.ServiceInterface, l *logrus.Logger, i *indexer.Service) (*Service, error) {
 	s := &Service{
 		db:      db,
 		log:     l,
@@ -241,5 +241,8 @@ func (s *Service) updateSync(id string) error {
 	qParams := model.QParameters{
 		Fields: &qFields,
 	}
-	return s.db.Update(qParams, syncTableName, "sync", "true")
+	updateFields := map[string]string{
+		"sync": "true",
+	}
+	return s.db.Update(syncTableName, qParams, updateFields)
 }
