@@ -147,7 +147,7 @@ func (s *Service) parseJsonIntoQuery(json map[string]interface{}, name string) (
 				})
 			}
 
-		case reflect.TypeOf(""), reflect.TypeOf(float64(0)):
+		case reflect.TypeOf(""), reflect.TypeOf(float64(0)), reflect.TypeOf(false):
 			valuesArr = append(valuesArr, v)
 			fields = append(fields, field)
 
@@ -383,8 +383,6 @@ func (s *Service) generateTablesForEntity(msg map[string]interface{}, name strin
 				s.log.Info("should break")
 				continue
 			}
-
-			s.log.Info("should not be here?")
 
 			value := v.([]interface{})[0]
 
