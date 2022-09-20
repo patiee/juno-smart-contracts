@@ -3,15 +3,16 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
+
+	"github.com/sirupsen/logrus"
 
 	"juno-contracts-worker/client"
 	"juno-contracts-worker/config"
 	"juno-contracts-worker/db"
 	"juno-contracts-worker/indexer"
-	"juno-contracts-worker/sync"
+	"juno-contracts-worker/utils"
 	"juno-contracts-worker/worker"
-
-	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -35,25 +36,16 @@ func main() {
 		Out:       os.Stdout,
 		Formatter: new(logrus.TextFormatter),
 		Hooks:     make(logrus.LevelHooks),
-		Level:     logrus.DebugLevel,
+		Level:     utils.LogLevel(config.LogLevel),
 	}
 
-	db, err := db.New(log, config.DbUser, config.DbPassword, config.DbName)
+	dbService, err := db.New(log, config.DbUser, config.DbPassword, config.DbName)
 	if err != nil {
 		fmt.Println("Could not connect with database: ", err)
 		return
 	}
-	defer db.Close()
-
-	// err = db.UpdateStateHeight(3803514)
-	// h, _ := db.GetStateHeight()
-	// fmt.Println("Starting with height: ", h)
-
-	sync, err := sync.New(db)
-	if err != nil {
-		fmt.Println("Error while creating sync: ", err)
-		return
-	}
+	dbWithLimiter := db.NewServiceWithConnectionLimiter(dbService)
+	defer dbWithLimiter.Close()
 
 	grpcClient, err := client.New(config.GrpcUrl, log)
 	if err != nil {
@@ -63,9 +55,18 @@ func main() {
 
 	defer grpcClient.Close()
 
-	worker := worker.New(grpcClient, indexer.New(db, log), log, sync)
-	if e := worker.Start("msg_instantiate_contracts", 3803514); e != nil {
-		fmt.Println("Error while processing data: ", err)
+	indexer := indexer.New(grpcClient, dbWithLimiter, log)
+
+	worker, err := worker.New(dbWithLimiter, log, indexer)
+	if err != nil {
+		fmt.Println("Error while creating sync: ", err)
 		return
 	}
+
+	var wg sync.WaitGroup
+	for _, msg := range config.Messages {
+		wg.Add(1)
+		go worker.StartSync(&wg, msg)
+	}
+	wg.Wait()
 }

@@ -1,214 +1,248 @@
 package worker
 
 import (
-	"juno-contracts-worker/client"
-	"juno-contracts-worker/indexer"
-	"juno-contracts-worker/sync"
-	"juno-contracts-worker/utils"
-
-	"github.com/iancoleman/strcase"
-	"github.com/sirupsen/logrus"
-
-	"encoding/json"
 	"fmt"
-	"reflect"
-	"strconv"
+	"sync"
+	"time"
+
+	"juno-contracts-worker/db"
+	"juno-contracts-worker/db/model"
+	"juno-contracts-worker/indexer"
+
+	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 )
 
-type Worker struct {
-	client  *client.Client
-	indexer *indexer.Service
+const syncTableName = "sync"
+
+type Service struct {
+	db      db.ServiceInterface
 	log     *logrus.Logger
-	sync    *sync.Service
+	indexer *indexer.Service
 }
 
-func New(c *client.Client, i *indexer.Service, l *logrus.Logger, s *sync.Service) *Worker {
-	return &Worker{client: c, indexer: i, log: l, sync: s}
+func New(db db.ServiceInterface, l *logrus.Logger, i *indexer.Service) (*Service, error) {
+	s := &Service{
+		db:      db,
+		log:     l,
+		indexer: i,
+	}
+
+	return s, s.initSyncHeightTable()
 }
 
-func (w *Worker) Start(name string, height int32) error {
-	var id, txHash, msg string
-	var index, h int32 = 0, height
-	fields := []string{"id", "index", "tx_hash", "msg"}
-
-	for {
-		rows, err := w.indexer.QueryFields(strcase.ToSnake(name), fields, &h, nil)
-		if err != nil {
-			return fmt.Errorf("could not query message, height: %d err: %w", h, err)
-		}
-
-		idx := 0
-		for rows.Next() {
-			fmt.Printf("Processing height: %d msg: %d\n", h, idx)
-
-			if err = rows.Scan(&id, &index, &txHash, &msg); err != nil {
-				return fmt.Errorf("could not read fields, height: %d message index: %d err: %w", h, idx, err)
-			}
-
-			if err = w.saveEntity(id, name[0:len(name)-1], msg); err != nil {
-				return fmt.Errorf("could not save entity, height: %d message index: %d err: %w", h, idx, err)
-			}
-
-			idx++
-		}
-
-		if err = w.sync.UpdateSyncHeight(h); err != nil {
-			return fmt.Errorf("could not update sync height: %d err: %w", h, err)
-		}
-		h++
+func (s *Service) initSyncHeightTable() error {
+	tableFields := map[string]interface{}{
+		"name":    "TEXT",
+		"height":  "NUMERIC",
+		"hash":    "TEXT",
+		"tx_hash": "TEXT",
+		"index":   "INT",
+		"sync":    "BOOLEAN",
+		"err":     "TEXT",
 	}
-}
+	uniqueIndexColums := []string{"name", "hash", "tx_hash", "index"}
 
-func (w *Worker) saveEntity(parentID, name, msg string) error {
-	var jsonMap map[string]interface{}
-
-	err := json.Unmarshal([]byte(msg), &jsonMap)
-	if err != nil {
-		return fmt.Errorf("could not unmarshal msg: %w", err)
+	if err := s.db.CreateTable(syncTableName, tableFields); err != nil {
+		return fmt.Errorf("could not create table %s: %w", syncTableName, err)
 	}
 
-	parentName := strcase.ToSnake(name)
-	codeID := w.getCodeId(jsonMap["codeId"])
-	if codeID == "" {
-		_ = w.client.GetContractInfo(jsonMap["contract"].(string))
-		return fmt.Errorf("code id cannot be empty %s %s", name, parentID)
-	}
-	entityName := fmt.Sprintf("%s_%s", parentName, codeID)
-
-	if msg := jsonMap["msg"]; msg != nil {
-		if err := w.processMsg(msg.(map[string]interface{}), parentID, entityName, parentName); err != nil {
-			return fmt.Errorf("could not process message: %w", err)
-		}
+	if err := s.db.CreateUniqueIndex(uniqueIndexColums, syncTableName+"_idx", syncTableName); err != nil {
+		return fmt.Errorf("could not create table %s: %w", syncTableName, err)
 	}
 
 	return nil
 }
 
-func (w *Worker) processMsg(msg map[string]interface{}, parentID, name, parentName string) error {
-	parentName += "s"
-	tableExists, err := w.indexer.TableExists(name)
+func (s *Service) fetch(tableName string) error {
+	s.log.Info("Fetching messages to process from table ", tableName)
+
+	lastSync, err := s.fetchLastSync(tableName)
 	if err != nil {
-		return fmt.Errorf("could not verify if table %s exists, err: %w", name, err)
+		return err
 	}
 
-	order, tables := w.GenerateTablesForEntity(msg, name)
+	return s.fetchMessagesByHeight(tableName, lastSync)
+}
 
-	if !tableExists {
-		for _, tableName := range order {
-			if err := w.indexer.CreateTable(tableName, tables[tableName].(map[string]interface{})); err != nil {
-				return fmt.Errorf("could not create table %s, err: %w", tableName, err)
-			}
-		}
+func (s *Service) fetchLastSync(tableName string) (height int32, err error) {
+	fields := []string{"height"}
+	orderBy := map[string]string{
+		"height":  "DESC",
+		"tx_hash": "DESC",
+		"index":   "DESC",
+	}
+	fieldsEqual := map[string]string{
+		"name": fmt.Sprintf("'%s'", tableName),
+	}
+	limit := int32(1)
+	qParams := &model.QParameters{
+		OrderBy: &orderBy,
+		Fields:  &fieldsEqual,
+		Limit:   &limit,
+	}
+	rows, err := s.db.Select(syncTableName, fields, qParams)
+	if err != nil {
+		return 0, err
+	}
 
-		if err := w.indexer.CreateIndex(name, parentName, name); err != nil {
-			return fmt.Errorf("could not create index %s with %s, err: %w", name, parentName, err)
+	for rows.Next() {
+		if err = rows.Scan(&height); err != nil {
+			return 0, err
 		}
+	}
+
+	return height, nil
+}
+
+func (s *Service) fetchFirstUnsync(tableName string) (*model.Unsync, error) {
+	var u model.Unsync
+	fields := []string{"id", "height", "hash", "tx_hash", "index"}
+	orderBy := map[string]string{
+		"height":  "ASC",
+		"tx_hash": "ASC",
+		"index":   "ASC",
+	}
+	fieldsEqual := map[string]string{
+		"name": fmt.Sprintf("'%s'", tableName),
+		"sync": "false",
+	}
+	limit := int32(1)
+	qParams := &model.QParameters{
+		OrderBy: &orderBy,
+		Fields:  &fieldsEqual,
+		Limit:   &limit,
+	}
+	rows, err := s.db.Select(syncTableName, fields, qParams)
+	if err != nil {
+		return nil, err
+	}
+
+	if rows.Next() {
+		if err = rows.Scan(&u.ID, &u.Height, &u.Hash, &u.TxHash, &u.Index); err != nil {
+			return nil, err
+		}
+		return &u, nil
 
 	} else {
-		for _, tableName := range order {
-			if err := w.indexer.CreateColumns(tableName, tables[tableName].(map[string]interface{})); err != nil {
-				return fmt.Errorf("could not create table columns  %s, err: %w", tableName, err)
-			}
-		}
+		return nil, nil
+	}
+}
+
+func (s *Service) fetchMessagesByHeight(tableName string, startBlock int32) error {
+	var height, index int32
+	var hash, txHash string
+	qFields := []string{"height", "hash", "tx_hash", "index"}
+	qOrderBy := map[string]string{
+		"height":  "ASC",
+		"tx_hash": "ASC",
+		"index":   "ASC",
+	}
+	qParams := &model.QParameters{
+		OrderBy:    &qOrderBy,
+		StartBlock: &startBlock,
 	}
 
-	entityID, err := w.indexer.SaveJson(name, msg)
+	rows, err := s.db.Select(tableName, qFields, qParams)
 	if err != nil {
-		return fmt.Errorf("could not save json message, err: %w", err)
+		return err
 	}
 
-	if err := w.indexer.LinkTable(parentID, entityID, name, parentName); err != nil {
-		return fmt.Errorf("could not link table %s with %s, err: %w", name, parentName, err)
+	iFields := []string{"id", "name", "height", "hash", "tx_hash", "index", "sync"}
+
+	for rows.Next() {
+		if err = rows.Scan(&height, &hash, &txHash, &index); err != nil {
+			return err
+		}
+
+		uuid, err := uuid.NewRandom()
+		if err != nil {
+			return err
+		}
+
+		iValues := []any{uuid, tableName, height, hash, txHash, index, false}
+
+		if err = s.db.Insert(syncTableName, iFields, iValues); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func (w *Worker) GenerateTablesForEntity(msg map[string]interface{}, name string) ([]string, map[string]interface{}) {
-	name = utils.DeleteS(name)
+func (s *Service) StartSync(wg *sync.WaitGroup, tableName string) {
+	s.log.Info("Start processing ", tableName)
+	defer wg.Done()
 
-	order := make([]string, 0)
-	relations := make([]string, 0)
-	entityMap := make(map[string]interface{})
-	rootEntity := make(map[string]interface{})
-	for k, v := range msg {
-		k = strcase.ToSnake(utils.DeleteS(k))
+	if err := s.fetch(tableName); err != nil {
+		s.log.Error("Error while fetching messages from table: ", tableName)
+		return
+	}
 
-		switch reflect.TypeOf(v) {
-
-		case reflect.TypeOf(""):
-			rootEntity[k] = "TEXT"
-
-		case reflect.TypeOf(map[string]interface{}{}):
-			entityName := strcase.ToSnake(utils.DeleteS(fmt.Sprintf("%s %s", name, k)))
-			entityOrder, nestedEntity := w.GenerateTablesForEntity(v.(map[string]interface{}), entityName)
-			for key, e := range nestedEntity {
-				entityMap[key] = e
-			}
-			rootEntity[entityName] = fmt.Sprintf("UUID REFERENCES app.%s", utils.UniqueShortName(entityName))
-			order = append(order, entityOrder...)
-
-		case reflect.TypeOf([]interface{}{}):
-
-			if isArray, arrayType := utils.IsArray(v.([]interface{})); isArray {
-				switch arrayType {
-				case "String":
-					rootEntity[k] = "TEXT[]"
-				case "Boolean":
-					rootEntity[k] = "BOOLEAN[]"
-				default:
-					fmt.Println("Uknown array type")
-				}
-
-				continue
-			}
-
-			value := v.([]interface{})[0]
-
-			entityName := strcase.ToSnake(utils.DeleteS(fmt.Sprintf("%s %s", name, k)))
-			entityOrder, nestedEntity := w.GenerateTablesForEntity(value.(map[string]interface{}), entityName)
-			for k, e := range nestedEntity {
-				entityMap[k] = e
-			}
-
-			relationTableName := entityName + "_r"
-			en := utils.UniqueShortName(entityName)
-			n := utils.UniqueShortName(name)
-			entityMap[relationTableName] = map[string]interface{}{
-				en: "UUID NOT NULL",
-				n:  "UUID NOT NULL",
-				fmt.Sprintf("FOREIGN KEY (%s) REFERENCES app.%s(id)", en, en): "",
-				fmt.Sprintf("FOREIGN KEY (%s) REFERENCES app.%s(id)", n, n):   "",
-				fmt.Sprintf("UNIQUE (%s, %s)", en, n):                         "",
-			}
-
-			order = append(order, entityOrder...)
-			relations = append(relations, relationTableName)
-
-		case reflect.TypeOf(float64(0)), reflect.TypeOf(int(0)):
-			rootEntity[k] = "BIGINT"
-
-		default:
-			w.log.Debugf("Unhandled value type: %s key: %s", reflect.TypeOf(v).String(), k)
+	for {
+		firstUnsync, err := s.fetchFirstUnsync(tableName)
+		if err != nil {
+			s.log.Error("Error while fetching first unsync message from table: ", tableName)
+			return
 		}
 
-	}
+		if firstUnsync == nil {
+			s.log.Info("Finished processing all messages from ", tableName)
+			time.Sleep(30 * time.Second)
 
-	entityMap[name] = rootEntity
-	return append(append(order, name), relations...), entityMap
+			if err := s.fetch(tableName); err != nil {
+				s.log.Error("Error while fetching messages from table: ", tableName)
+				return
+			}
+
+			continue
+		}
+
+		var id, txHash, msg string
+		var index int32
+		fields := []string{"id", "index", "tx_hash", "msg"}
+
+		qFields := map[string]string{
+			"hash":    fmt.Sprintf("'%s'", firstUnsync.Hash),
+			"height":  fmt.Sprintf("'%d'", firstUnsync.Height),
+			"index":   fmt.Sprintf("'%d'", firstUnsync.Index),
+			"tx_hash": fmt.Sprintf("'%s'", firstUnsync.TxHash),
+		}
+		qParams := &model.QParameters{Fields: &qFields}
+		rows, err := s.indexer.QueryFields(tableName, fields, qParams)
+		if err != nil {
+			s.log.Errorf("could not query message from table %s tx_hash: %s index: %d err: %w", tableName, txHash, index, err)
+			return
+		}
+
+		if rows.Next() {
+			if err = rows.Scan(&id, &index, &txHash, &msg); err != nil {
+				s.log.Errorf("could not read fields from table %s tx_hash: %s index: %d err: %w", tableName, txHash, index, err)
+				return
+			}
+
+			if err = s.indexer.SaveJsonAsEntity(id, tableName[0:len(tableName)-1], msg); err != nil {
+				s.log.Errorf("could not save entity from table %s tx_hash: %s index: %d err: %w", tableName, txHash, index, err)
+				return
+			}
+		}
+
+		if err = s.updateSync(firstUnsync.ID); err != nil {
+			s.log.Errorf("could not update sync with id: %s from table %s tx_hash: %s index: %d err: %w", firstUnsync.ID, tableName, txHash, index, err)
+			return
+		}
+	}
 }
 
-func (w *Worker) getCodeId(codeId interface{}) string {
-	if codeId == nil {
-		return ""
+func (s *Service) updateSync(id string) error {
+	qFields := map[string]string{
+		"id": fmt.Sprintf("'%s'", id),
 	}
-
-	switch reflect.TypeOf(codeId) {
-	case reflect.TypeOf(map[string]interface{}{}):
-		code := codeId.(map[string]interface{})["low"].(float64)
-		return strconv.Itoa(int(code))
-	default:
-		w.log.Debugf("Unknown codeID type: %s", reflect.TypeOf(codeId).String())
-		return ""
+	qParams := model.QParameters{
+		Fields: &qFields,
 	}
+	updateFields := map[string]string{
+		"sync": "true",
+	}
+	return s.db.Update(syncTableName, qParams, updateFields)
 }

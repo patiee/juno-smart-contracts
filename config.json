@@ -2,7 +2,11 @@
     "db_user": "postgres",
     "db_password": "postgres",
     "db_name": "postgres",
+    "log_level": "info",
     "schema_path": "schema.graphql",
     "resolvers_path": "schema/",
-    "grpc_url": "rpc-juno.itastakers.com:443"
+    "grpc_url": "rpc-juno.itastakers.com:443",
+    "messages": [
+        "msg_instantiate_contracts"
+    ]
 }

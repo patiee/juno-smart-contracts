@@ -1,18 +1,22 @@
 package indexer
 
 import (
-	"juno-contracts-worker/db"
-	"juno-contracts-worker/utils"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"os"
+	"reflect"
+	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/iancoleman/strcase"
 	"github.com/sirupsen/logrus"
 
-	"database/sql"
-	"fmt"
-	"reflect"
-	"strconv"
-	"strings"
+	"juno-contracts-worker/client"
+	"juno-contracts-worker/db"
+	"juno-contracts-worker/db/model"
+	"juno-contracts-worker/utils"
 )
 
 type manyToMany struct {
@@ -22,17 +26,18 @@ type manyToMany struct {
 }
 
 type Service struct {
-	db  *db.DB
-	log *logrus.Logger
+	client *client.Client
+	db     db.ServiceInterface
+	log    *logrus.Logger
 }
 
-func New(d *db.DB, l *logrus.Logger) *Service {
-	return &Service{db: d, log: l}
+func New(c *client.Client, d db.ServiceInterface, l *logrus.Logger) *Service {
+	return &Service{client: c, db: d, log: l}
 }
 
-func (s *Service) CreateIndex(idxName, parentTableName, tableName string) error {
-	s.log.Debugf("Create index %s: %s: %s", idxName, parentTableName, tableName)
-	return s.db.CreateIndex(idxName, parentTableName, tableName)
+func (s *Service) AddColumn(idxName, parentTableName, tableName string) error {
+	s.log.Debugf("Add column %s: %s: %s", idxName, parentTableName, tableName)
+	return s.db.AddColumn(idxName, parentTableName, tableName)
 }
 
 func (s *Service) CreateTable(tableName string, fields map[string]interface{}) error {
@@ -43,6 +48,7 @@ func (s *Service) CreateTable(tableName string, fields map[string]interface{}) e
 func (s *Service) CreateColumns(tableName string, fields map[string]interface{}) error {
 	s.log.Debugf("Create columns %s: %v", tableName, fields)
 
+	s.log.Info(fields)
 	tableName = utils.UniqueShortName(tableName)
 
 	for k, v := range fields {
@@ -52,7 +58,7 @@ func (s *Service) CreateColumns(tableName string, fields map[string]interface{})
 
 		} else if strings.Contains(k, "REFERENCES") {
 			k = utils.GetFieldName(k)
-			if err := s.db.CreateIndex(k, tableName, k); err != nil {
+			if err := s.db.AddColumn(k, tableName, k); err != nil {
 				return err
 			}
 
@@ -64,11 +70,12 @@ func (s *Service) CreateColumns(tableName string, fields map[string]interface{})
 	return nil
 }
 
-func (s *Service) QueryFields(tableName string, fields []string, h *int32, id *string) (*sql.Rows, error) {
-	return s.db.Select(tableName, fields, h, id)
+func (s *Service) QueryFields(tableName string, fields []string, qParams *model.QParameters) (*sql.Rows, error) {
+	return s.db.Select(tableName, fields, qParams)
 }
 
 func (s *Service) TableExists(tableName string) (bool, error) {
+	tableName = utils.UniqueShortName(tableName)
 	s.log.Debugf("Query table exists: %s", tableName)
 	return s.db.TableExists(tableName)
 }
@@ -89,7 +96,7 @@ func (s *Service) SaveJson(name string, json map[string]interface{}) (string, er
 		return "", err
 	}
 
-	if err := s.db.Insert(name, vArray, fields); err != nil {
+	if err := s.db.Insert(name, fields, vArray); err != nil {
 		return "", err
 	}
 
@@ -153,34 +160,44 @@ func (s *Service) parseJsonIntoQuery(json map[string]interface{}, name string) (
 }
 
 func mapArray(m []interface{}) string {
-	s := "{"
 	l := len(m)
+	array := make([]string, l)
 	for i := 0; i < l; i++ {
-		s += mapArrayToString(m[i].(map[string]interface{}))
-		if i < l-1 {
-			s += ", "
+		value := m[i]
+		kind := reflect.ValueOf(value).Kind()
+		switch kind {
+		case reflect.Map:
+			array[i] = mapToString(value.(map[string]interface{}))
+		default:
+			array[i] = mapValueToString(value)
 		}
 	}
-	s += "}"
-	return s
+	return fmt.Sprintf("{%s}", strings.Join(array, ","))
 }
 
-func mapArrayToString(m map[string]interface{}) (s string) {
+func mapToString(m map[string]interface{}) (s string) {
 	l := len(m)
+	mapValues := make([]string, l)
 	for i := 0; i < l; i++ {
 		value := m[strconv.Itoa(i)]
-		valueType := reflect.TypeOf(value)
-		switch valueType.String() {
-		case "String":
-			s += value.(string)
-		case "Boolean":
-			boolean, _ := value.(bool)
-			s += strconv.FormatBool(boolean)
-		default:
-			fmt.Println("uknown value type ", valueType)
-		}
+		mapValues[i] = mapValueToString(value)
 	}
-	return s
+	return fmt.Sprintf("{%s}", strings.Join(mapValues, ","))
+}
+
+func mapValueToString(v interface{}) string {
+	kind := reflect.TypeOf(v).Kind()
+	switch kind {
+	case reflect.String:
+		return v.(string)
+	case reflect.Bool:
+		boolean, _ := v.(bool)
+		return strconv.FormatBool(boolean)
+	default:
+		fmt.Println("uknown value kind: ", kind)
+		os.Exit(666)
+		return ""
+	}
 }
 
 func (s *Service) saveStructArray(arr []interface{}, fieldName string) (ids []string, err error) {
@@ -209,7 +226,7 @@ func (s *Service) saveManyToMany(table, field string, entityID string, ids []str
 
 		s.log.Debugf("Save many to many %s and %s ", table, field)
 
-		if err = s.db.Insert(field+"_r", []any{uuid, entityID, id}, []string{"id", table, f}); err != nil {
+		if err = s.db.Insert(field+"_r", []string{"id", table, f}, []any{uuid, entityID, id}); err != nil {
 			return err
 		}
 	}
@@ -219,4 +236,216 @@ func (s *Service) saveManyToMany(table, field string, entityID string, ids []str
 func (s *Service) LinkTable(id, linkID, idxName, tableName string) error {
 	s.log.Debugf("Link table %s with %s", tableName, idxName)
 	return s.db.LinkTable(id, linkID, idxName, tableName)
+}
+
+func (s *Service) SaveJsonAsEntity(parentID, name, msg string) error {
+	var jsonMap map[string]interface{}
+
+	err := json.Unmarshal([]byte(msg), &jsonMap)
+	if err != nil {
+		return fmt.Errorf("could not unmarshal msg: %w", err)
+	}
+
+	parentName := strcase.ToSnake(name)
+	codeID := s.getCodeId(jsonMap["codeId"])
+	if codeID == "" {
+		_ = s.client.GetContractInfo(jsonMap["contract"].(string))
+		return fmt.Errorf("code id cannot be empty %s %s", name, parentID)
+	}
+	entityName := fmt.Sprintf("%s_%s", parentName, codeID)
+
+	if msg := jsonMap["msg"]; msg != nil {
+		if err := s.processMsg(msg.(map[string]interface{}), parentID, entityName, parentName); err != nil {
+			return fmt.Errorf("could not process message: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) processMsg(msg map[string]interface{}, parentID, name, parentName string) error {
+	parentName += "s"
+	tableExists, err := s.TableExists(name)
+	if err != nil {
+		return fmt.Errorf("could not verify if table %s exists, err: %w", name, err)
+	}
+
+	order, tables := s.generateTablesForEntity(msg, name)
+
+	if !tableExists {
+		s.log.Info("table not exists")
+		for _, tableName := range order {
+			if err := s.CreateTable(tableName, tables[tableName].(map[string]interface{})); err != nil {
+				return fmt.Errorf("could not create table %s, err: %w", tableName, err)
+			}
+		}
+
+		if err := s.AddColumn(name, parentName, name); err != nil {
+			return fmt.Errorf("could not create index %s with %s, err: %w", name, parentName, err)
+		}
+
+	} else {
+		for _, tableName := range order {
+			if err := s.CreateColumns(tableName, tables[tableName].(map[string]interface{})); err != nil {
+				return fmt.Errorf("could not create table columns  %s, err: %w", tableName, err)
+			}
+		}
+	}
+
+	entityID, err := s.SaveJson(name, msg)
+	if err != nil {
+		return fmt.Errorf("could not save json message, err: %w", err)
+	}
+
+	if err := s.LinkTable(parentID, entityID, name, parentName); err != nil {
+		return fmt.Errorf("could not link table %s with %s, err: %w", name, parentName, err)
+	}
+
+	return nil
+}
+
+// func (s *Service) generateTablesForEntityWrapped(msg interface{}, name string) ([]string, map[string]interface{}) {
+// 	order := make([]string, 0)
+// 	relations := make([]string, 0)
+// 	entityMap := make(map[string]interface{})
+// 	rootEntity := make(map[string]interface{})
+// 	name = utils.DeleteS(name)
+
+// 	s.log.Info(msg)
+
+// 	value := reflect.ValueOf(msg).String()
+
+// 	switch value {
+// 	case reflect.Map.String():
+// 		return s.generateTablesForEntityMap(msg.(map[string]interface{}), name)
+// 	case reflect.String.String():
+
+// 	default:
+// 		s.log.Debugf("uknown type: %s", value)
+// 	}
+
+// 	entityMap[name] = rootEntity
+// 	return append(append(order, name), relations...), entityMap
+// }
+
+func (s *Service) generateTablesForEntity(msg map[string]interface{}, name string) ([]string, map[string]interface{}) {
+	order := make([]string, 0)
+	relations := make([]string, 0)
+	entityMap := make(map[string]interface{})
+	rootEntity := make(map[string]interface{})
+
+	name = utils.DeleteS(name)
+
+	s.log.Info(msg)
+
+	for k, v := range msg {
+		k = strcase.ToSnake(utils.DeleteS(k))
+		entityName := strcase.ToSnake(utils.DeleteS(fmt.Sprintf("%s %s", name, k)))
+		kind := reflect.ValueOf(v).Kind()
+
+		s.log.Info("kind: ", kind)
+		s.log.Info("key: ", k)
+		s.log.Info("value: ", v)
+
+		switch kind {
+
+		case reflect.String:
+			rootEntity[k] = "TEXT"
+
+		case reflect.Float64, reflect.Int:
+			rootEntity[k] = "BIGINT"
+
+		case reflect.Bool:
+			rootEntity[k] = "BOOLEAN"
+
+		case reflect.Map:
+			entityOrder, nestedEntity := s.generateTablesForEntity(v.(map[string]interface{}), entityName)
+			for key, e := range nestedEntity {
+				entityMap[key] = e
+			}
+			rootEntity[entityName] = fmt.Sprintf("UUID REFERENCES app.%s", utils.UniqueShortName(entityName))
+			order = append(order, entityOrder...)
+
+		case reflect.Array, reflect.Slice:
+			isArray, arrayType := utils.IsArray(v.([]interface{}))
+
+			if isArray {
+				switch arrayType {
+				case "String":
+					rootEntity[k] = "TEXT[]"
+				case "Boolean":
+					rootEntity[k] = "BOOLEAN[]"
+				default:
+					fmt.Println("Uknown array type")
+					os.Exit(666)
+				}
+
+				s.log.Info("should break")
+				continue
+			}
+
+			s.log.Info("should not be here?")
+
+			value := v.([]interface{})[0]
+
+			s.log.Info(value)
+
+			// entityName := strcase.ToSnake(utils.DeleteS(fmt.Sprintf("%s %s", name, k)))
+			entityOrder, nestedEntity := s.generateTablesForEntity(value.(map[string]interface{}), entityName)
+			for k, e := range nestedEntity {
+				entityMap[k] = e
+			}
+
+			relationTableName := entityName + "_r"
+			entityMap[relationTableName] = relationTableFields(entityName, name)
+
+			order = append(order, entityOrder...)
+			relations = append(relations, relationTableName)
+
+		// case reflect.TypeOf(nil).Kind():
+
+		// 	entityMap[entityName] = map[string]interface{}{}
+
+		// 	relationTableName := entityName + "_r"
+		// 	entityMap[relationTableName] = relationTableFields(entityName, name)
+
+		// 	order = append(order, entityName)
+		// 	relations = append(relations, relationTableName)
+
+		default:
+			s.log.Debugf("Unhandled value type: %s key: %s", reflect.TypeOf(v).String(), k)
+			os.Exit(666)
+		}
+
+	}
+
+	entityMap[name] = rootEntity
+	return append(append(order, name), relations...), entityMap
+}
+
+func (s *Service) getCodeId(codeId interface{}) string {
+	if codeId == nil {
+		return ""
+	}
+
+	switch reflect.TypeOf(codeId) {
+	case reflect.TypeOf(map[string]interface{}{}):
+		code := codeId.(map[string]interface{})["low"].(float64)
+		return strconv.Itoa(int(code))
+	default:
+		s.log.Debugf("Unknown codeID type: %s", reflect.TypeOf(codeId).String())
+		return ""
+	}
+}
+
+func relationTableFields(entityName, name string) map[string]interface{} {
+	en := utils.UniqueShortName(entityName)
+	n := utils.UniqueShortName(name)
+	return map[string]interface{}{
+		en: "UUID NOT NULL",
+		n:  "UUID NOT NULL",
+		fmt.Sprintf("FOREIGN KEY (%s) REFERENCES app.%s(id)", en, en): "",
+		fmt.Sprintf("FOREIGN KEY (%s) REFERENCES app.%s(id)", n, n):   "",
+		fmt.Sprintf("UNIQUE (%s, %s)", en, n):                         "",
+	}
 }

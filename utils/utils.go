@@ -1,9 +1,13 @@
 package utils
 
 import (
+	"fmt"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/sirupsen/logrus"
 )
 
 func DeleteS(str string) string {
@@ -68,10 +72,25 @@ func UniqueShortName(name string) (shortName string) {
 }
 
 func IsArray(val []interface{}) (bool, string) {
-	typeOfValue := reflect.TypeOf(val[0])
-	if reflect.TypeOf(map[string]interface{}{}) == typeOfValue {
-		return isMapArray(val[0].(map[string]interface{}))
+	if len(val) == 0 {
+		return true, "String"
 	}
+
+	kind := reflect.TypeOf(val[0]).Kind()
+	fmt.Println(kind)
+
+	switch kind {
+	case reflect.String:
+		fmt.Println("reflect string")
+		return true, "String"
+	case reflect.Map:
+		fmt.Println("reflect map")
+		return isMapArray(val[0].(map[string]interface{}))
+	default:
+		fmt.Println("uknown kind: ", kind)
+		os.Exit(666)
+	}
+
 	return false, ""
 }
 
@@ -94,4 +113,15 @@ func GetFieldName(str string) string {
 		}
 	}
 	return ""
+}
+
+func LogLevel(s string) logrus.Level {
+	switch s {
+	case "debug":
+		return logrus.DebugLevel
+	case "info":
+		return logrus.InfoLevel
+	default:
+		return logrus.DebugLevel
+	}
 }
