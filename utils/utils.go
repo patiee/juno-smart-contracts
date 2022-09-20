@@ -77,14 +77,11 @@ func IsArray(val []interface{}) (bool, string) {
 	}
 
 	kind := reflect.TypeOf(val[0]).Kind()
-	fmt.Println(kind)
 
 	switch kind {
 	case reflect.String:
-		fmt.Println("reflect string")
 		return true, "String"
 	case reflect.Map:
-		fmt.Println("reflect map")
 		return isMapArray(val[0].(map[string]interface{}))
 	default:
 		fmt.Println("uknown kind: ", kind)

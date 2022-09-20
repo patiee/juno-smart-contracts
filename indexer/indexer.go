@@ -307,30 +307,6 @@ func (s *Service) processMsg(msg map[string]interface{}, parentID, name, parentN
 	return nil
 }
 
-// func (s *Service) generateTablesForEntityWrapped(msg interface{}, name string) ([]string, map[string]interface{}) {
-// 	order := make([]string, 0)
-// 	relations := make([]string, 0)
-// 	entityMap := make(map[string]interface{})
-// 	rootEntity := make(map[string]interface{})
-// 	name = utils.DeleteS(name)
-
-// 	s.log.Info(msg)
-
-// 	value := reflect.ValueOf(msg).String()
-
-// 	switch value {
-// 	case reflect.Map.String():
-// 		return s.generateTablesForEntityMap(msg.(map[string]interface{}), name)
-// 	case reflect.String.String():
-
-// 	default:
-// 		s.log.Debugf("uknown type: %s", value)
-// 	}
-
-// 	entityMap[name] = rootEntity
-// 	return append(append(order, name), relations...), entityMap
-// }
-
 func (s *Service) generateTablesForEntity(msg map[string]interface{}, name string) ([]string, map[string]interface{}) {
 	order := make([]string, 0)
 	relations := make([]string, 0)
@@ -339,16 +315,10 @@ func (s *Service) generateTablesForEntity(msg map[string]interface{}, name strin
 
 	name = utils.DeleteS(name)
 
-	s.log.Info(msg)
-
 	for k, v := range msg {
 		k = strcase.ToSnake(utils.DeleteS(k))
 		entityName := strcase.ToSnake(utils.DeleteS(fmt.Sprintf("%s %s", name, k)))
 		kind := reflect.ValueOf(v).Kind()
-
-		s.log.Info("kind: ", kind)
-		s.log.Info("key: ", k)
-		s.log.Info("value: ", v)
 
 		switch kind {
 
@@ -389,9 +359,6 @@ func (s *Service) generateTablesForEntity(msg map[string]interface{}, name strin
 
 			value := v.([]interface{})[0]
 
-			s.log.Info(value)
-
-			// entityName := strcase.ToSnake(utils.DeleteS(fmt.Sprintf("%s %s", name, k)))
 			entityOrder, nestedEntity := s.generateTablesForEntity(value.(map[string]interface{}), entityName)
 			for k, e := range nestedEntity {
 				entityMap[k] = e
@@ -402,16 +369,6 @@ func (s *Service) generateTablesForEntity(msg map[string]interface{}, name strin
 
 			order = append(order, entityOrder...)
 			relations = append(relations, relationTableName)
-
-		// case reflect.TypeOf(nil).Kind():
-
-		// 	entityMap[entityName] = map[string]interface{}{}
-
-		// 	relationTableName := entityName + "_r"
-		// 	entityMap[relationTableName] = relationTableFields(entityName, name)
-
-		// 	order = append(order, entityName)
-		// 	relations = append(relations, relationTableName)
 
 		default:
 			s.log.Debugf("Unhandled value type: %s key: %s", reflect.TypeOf(v).String(), k)

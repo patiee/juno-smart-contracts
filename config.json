@@ -2,11 +2,11 @@
     "db_user": "postgres",
     "db_password": "postgres",
     "db_name": "postgres",
-    "log_level": "debug",
+    "log_level": "info",
     "schema_path": "schema.graphql",
     "resolvers_path": "schema/",
     "grpc_url": "localhost:9090",
     "messages": [
-        "msg_execute_contracts"
+        "msg_instantiate_contracts"
     ]
 }
