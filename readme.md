@@ -6,6 +6,8 @@ Start indexing transaction messages with [SubQuery indexer. ](https://github.com
 
 
 ## Worker
+Before run, make sure that you have address for juno grpc server. You can setup own node with [docker](https://docs.junonetwork.io/smart-contracts-and-junod-development/junod-local-dev-setup#run-juno). Please note that you need to sync node first to height you want to query.
+
 Run worker to process transaction messages:
 ```
 go run cmd/worker/main.go --config config.json

@@ -37,7 +37,7 @@ func (c *Client) Close() {
 	c.client.Close()
 }
 
-func (c *Client) GetContractInfo(contractAddress string) error {
+func (c *Client) GetContractInfo(contractAddress string) (uint64, error) {
 	c.log.Debugf("Get contract info for address: %s", contractAddress)
 
 	queryClient := types.NewQueryClient(c.client)
@@ -50,9 +50,8 @@ func (c *Client) GetContractInfo(contractAddress string) error {
 
 	if err != nil {
 		c.log.Errorf("can't get contract info, address: %s err: %s", contractAddress, err)
-		return err
+		return 0, err
 	}
 
-	c.log.Debugf("Get contract info for %s response: %s", contractAddress, res)
-	return nil
+	return res.CodeID, nil
 }

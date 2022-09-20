@@ -249,8 +249,11 @@ func (s *Service) SaveJsonAsEntity(parentID, name, msg string) error {
 	parentName := strcase.ToSnake(name)
 	codeID := s.getCodeId(jsonMap["codeId"])
 	if codeID == "" {
-		_ = s.client.GetContractInfo(jsonMap["contract"].(string))
-		return fmt.Errorf("code id cannot be empty %s %s", name, parentID)
+		code, err := s.client.GetContractInfo(jsonMap["contract"].(string))
+		if err != nil {
+			return err
+		}
+		codeID = strconv.Itoa(int(code))
 	}
 	entityName := fmt.Sprintf("%s_%s", parentName, codeID)
 
